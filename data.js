@@ -291,7 +291,11 @@
     window.ACOMPANHAMENTO = acomp;
     window.TOTAL_INSTALADO = totalI;
     window.TOTAL_VERIFICADO = totalV;
-    window.MUST_EXCEED = buildMockMust(limits, dates);
+    const mockMust = buildMockMust(limits, dates);
+    window.MUST_EXCEED = mockMust;
+    window.MUST_SUMMARY = Object.fromEntries(Object.entries(mockMust).map(([k, evs]) => [
+      k, { total: evs.length, ponta: evs.filter(e => e.type === "MUSTP").length, fora_ponta: evs.filter(e => e.type === "MUSTFP").length },
+    ]));
     window.EXTREMOS_TOP = buildMockExtremos(limits, dates);
     window.RAO_DATA = buildMockRao(Object.keys(limits));
     window.USING_REAL_DATA = false;
@@ -328,7 +332,19 @@
     window.ACOMPANHAMENTO = meta.acompanhamento || [];
     window.TOTAL_INSTALADO = (meta.totals && meta.totals.instalado) || 0;
     window.TOTAL_VERIFICADO = (meta.totals && meta.totals.verificado) || 0;
-    window.MUST_EXCEED = must;
+    // must.json may be in the new {events, summary} shape or the legacy flat {ponto: [...]} form.
+    let mustEvents, mustSummary;
+    if (must && typeof must === "object" && must.events) {
+      mustEvents = must.events;
+      mustSummary = must.summary || {};
+    } else {
+      mustEvents = must || {};
+      mustSummary = Object.fromEntries(Object.entries(mustEvents).map(([k, evs]) => [
+        k, { total: evs.length, ponta: evs.filter(e => e.type === "MUSTP").length, fora_ponta: evs.filter(e => e.type === "MUSTFP").length },
+      ]));
+    }
+    window.MUST_EXCEED = mustEvents;
+    window.MUST_SUMMARY = mustSummary;
     window.EXTREMOS_TOP = extremos;
     window.RAO_DATA = rao;
     window.USING_REAL_DATA = true;

@@ -111,43 +111,68 @@ function AcompanhamentoTable({ onPick, picked }) {
 }
 
 // ---------- MUST ----------
+const MUST_RENDER_LIMIT = 500;
+
 function MustPanel() {
   const [filter, setFilter] = useS("all");
+  const [pontoFilter, setPontoFilter] = useS("all");
+
+  const events = window.MUST_EXCEED || {};
+  const summary = window.MUST_SUMMARY || {};
+  const pontosWithEvents = useM(() => Object.keys(summary).filter(p => (summary[p].total || 0) > 0).sort(), [summary]);
+
   const all = useM(() => {
-    const events = [];
-    Object.keys(window.MUST_EXCEED).forEach(p => {
-      window.MUST_EXCEED[p].forEach(ev => events.push({ ...ev, ponto: p }));
+    const out = [];
+    const sources = pontoFilter === "all" ? Object.keys(events) : [pontoFilter];
+    sources.forEach(p => {
+      (events[p] || []).forEach(ev => out.push({ ...ev, ponto: p }));
     });
-    return events.sort((a,b) => b.ts.localeCompare(a.ts));
-  }, []);
+    out.sort((a, b) => b.ts.localeCompare(a.ts));
+    return out;
+  }, [events, pontoFilter]);
+
   const filtered = filter === "all" ? all : all.filter(e => e.type === filter);
-  const totalP = all.filter(e => e.type === "MUSTP").length;
-  const totalFP = all.filter(e => e.type === "MUSTFP").length;
+  const visible = filtered.slice(0, MUST_RENDER_LIMIT);
+  const truncated = filtered.length - visible.length;
+
+  // KPIs use summary (pre-cap) so totals reflect the full dataset
+  const totalP = useM(() => Object.values(summary).reduce((a, s) => a + (s.ponta || 0), 0), [summary]);
+  const totalFP = useM(() => Object.values(summary).reduce((a, s) => a + (s.fora_ponta || 0), 0), [summary]);
+  const pontosComOcorrencia = pontosWithEvents.length;
+  const totalPontos = (window.POINTS && window.POINTS.length) || 21;
 
   return (
     <>
       <div className="kpi-grid" style={{ marginBottom: 16, gridTemplateColumns: "repeat(3, 1fr)" }}>
         <div className="kpi"><div className="kpi-label">Ultrapassagens · Ponta</div><div className="kpi-value">{totalP}<span className="kpi-unit">eventos</span></div><div className="kpi-delta">Janelas 18:30–21:30 · dias úteis</div></div>
         <div className="kpi"><div className="kpi-label">Ultrapassagens · Fora-ponta</div><div className="kpi-value">{totalFP}<span className="kpi-unit">eventos</span></div><div className="kpi-delta">Demais janelas</div></div>
-        <div className="kpi"><div className="kpi-label">Pontos com ocorrência</div><div className="kpi-value">{Object.values(window.MUST_EXCEED).filter(l => l.length > 0).length}<span className="kpi-unit">de 21</span></div><div className="kpi-delta">Últimos 60 dias</div></div>
+        <div className="kpi"><div className="kpi-label">Pontos com ocorrência</div><div className="kpi-value">{pontosComOcorrencia}<span className="kpi-unit">de {totalPontos}</span></div><div className="kpi-delta">Período do arquivo</div></div>
       </div>
 
       <div className="card flush">
         <div className="card-h">
           <div className="card-h-title">Ocorrências (15 min)</div>
-          <div className="toggle-pill">
-            <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>Todas</button>
-            <button className={filter === "MUSTP" ? "active" : ""} onClick={() => setFilter("MUSTP")}>Ponta</button>
-            <button className={filter === "MUSTFP" ? "active" : ""} onClick={() => setFilter("MUSTFP")}>Fora-ponta</button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select className="h-control" value={pontoFilter} onChange={e => setPontoFilter(e.target.value)} style={{ maxWidth: 200 }}>
+              <option value="all">Todos os pontos</option>
+              {pontosWithEvents.map(p => (
+                <option key={p} value={p}>{p} ({summary[p].total})</option>
+              ))}
+            </select>
+            <div className="toggle-pill">
+              <button className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>Todas</button>
+              <button className={filter === "MUSTP" ? "active" : ""} onClick={() => setFilter("MUSTP")}>Ponta</button>
+              <button className={filter === "MUSTFP" ? "active" : ""} onClick={() => setFilter("MUSTFP")}>Fora-ponta</button>
+            </div>
           </div>
         </div>
         <div style={{ maxHeight: 480, overflow: "auto" }}>
           <table className="dt">
             <thead><tr><th>Data/Hora</th><th>Ponto</th><th>Tipo</th><th className="num">Limite</th><th className="num">Verificado</th><th className="num">Excedente</th></tr></thead>
             <tbody>
-              {filtered.length === 0 ? (
+              {visible.length === 0 ? (
                 <tr><td colSpan="6" className="empty">Sem ocorrências no filtro atual.</td></tr>
-              ) : filtered.map((e,i) => {
+              ) : visible.map((e, i) => {
                 const exc = ((e.value_mw - e.threshold) / e.threshold) * 100;
                 return (
                   <tr key={i}>
@@ -163,6 +188,11 @@ function MustPanel() {
             </tbody>
           </table>
         </div>
+        {truncated > 0 && (
+          <div style={{ padding: "10px 16px", borderTop: "1px solid var(--border)", fontSize: 12, color: "var(--text-muted)" }}>
+            Mostrando {visible.length} de {filtered.length} ocorrências. Filtre por ponto ou tipo para refinar.
+          </div>
+        )}
       </div>
     </>
   );
@@ -315,57 +345,111 @@ function ExtremosPanel({ ponto }) {
 }
 
 // ---------- Balanço ----------
-function BalancoPanel({ selected }) {
+function BalancoPanel({ selected, onToggle, onSetSelected }) {
+  const allPontos = useM(() => Object.keys(window.LIMITS || {}).filter(k => k !== "Soma Total").sort(), []);
   const pts = Array.from(selected);
+
+  const selectAll = () => onSetSelected(new Set(allPontos));
+  const clearAll = () => onSetSelected(new Set());
+
+  const totals = useM(() => {
+    const sumP = pts.reduce((a, p) => a + ((window.LIMITS[p] && window.LIMITS[p].Pmax) || 0), 0);
+    const sumS = pts.reduce((a, p) => a + ((window.LIMITS[p] && window.LIMITS[p].Smax) || 0), 0);
+    const sumI = pts.reduce((a, p) => a + ((window.LIMITS[p] && window.LIMITS[p].Instalado) || 0), 0);
+    return { sumP, sumS, sumI };
+  }, [pts.join(",")]);
+
+  const allSelected = pts.length === allPontos.length && allPontos.length > 0;
+  const somaTopo = (window.EXTREMOS_TOP || {})["Soma Total"] || {};
+  const showSomaTotalTop = allSelected;
+
+  const Picker = (
+    <div className="card flush" style={{ marginBottom: 16 }}>
+      <div className="card-h">
+        <div>
+          <div className="card-h-title">Selecione os pontos</div>
+          <div className="card-h-sub">{pts.length} de {allPontos.length} selecionados</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="h-control" onClick={selectAll} disabled={allSelected}>Todos</button>
+          <button className="h-control" onClick={clearAll} disabled={pts.length === 0}>Limpar</button>
+        </div>
+      </div>
+      <div style={{ padding: 12 }}>
+        <div className="chips">
+          {allPontos.map(p => {
+            const isSel = selected.has(p);
+            return (
+              <button key={p} className="chip"
+                onClick={() => onToggle(p)}
+                style={{
+                  cursor: "pointer", paddingRight: 10,
+                  background: isSel ? "var(--accent-soft)" : "var(--bg-elev)",
+                  color: isSel ? "var(--accent)" : undefined,
+                  borderColor: isSel ? "var(--accent)" : "var(--border)",
+                }}>
+                <span className="swatch" style={{ background: isSel ? "var(--accent)" : "var(--text-faint)" }}></span>
+                {p}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+
   if (pts.length < 2) {
     return (
-      <div className="card">
-        <div className="card-h-title">Balanço de pontos</div>
-        <div className="card-h-sub" style={{ marginTop: 4 }}>Selecione 2 ou mais pontos no painel lateral para calcular extremos da soma.</div>
-        <div className="empty">Aguardando seleção de pontos…</div>
-      </div>
+      <>
+        {Picker}
+        <div className="card">
+          <div className="card-h-title">Balanço de pontos</div>
+          <div className="card-h-sub" style={{ marginTop: 4 }}>Selecione 2 ou mais pontos acima para calcular a soma.</div>
+          <div className="empty">Aguardando seleção…</div>
+        </div>
+      </>
     );
   }
-  const totals = useM(() => {
-    let s = pts.join("").length * 17;
-    const rand = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
-    const sumP = pts.reduce((a, p) => a + (window.LIMITS[p].Pmax || 0), 0);
-    const sumS = pts.reduce((a, p) => a + (window.LIMITS[p].Smax || 0), 0);
-    const sumI = pts.reduce((a, p) => a + (window.LIMITS[p].Instalado || 0), 0);
-    const top = (max) => Array.from({length: 5}, (_, i) => ({
-      value: max * (0.95 - i * 0.02),
-      ts: `${window.AVAILABLE_DATES[Math.floor(rand()*60)]} ${String(Math.floor(rand()*24)).padStart(2,"0")}:${[0,15,30,45][Math.floor(rand()*4)]}`,
-    }));
-    return { sumP, sumS, sumI, P: top(sumP), S: top(sumS) };
-  }, [pts.join(",")]);
 
   return (
     <>
+      {Picker}
       <div className="kpi-grid" style={{ marginBottom: 16, gridTemplateColumns: "repeat(3, 1fr)" }}>
-        <div className="kpi"><div className="kpi-label">Soma · Instalado</div><div className="kpi-value">{fmt(totals.sumI, 0)}<span className="kpi-unit">MVA</span></div><div className="kpi-delta">{pts.length} pontos selecionados</div></div>
-        <div className="kpi"><div className="kpi-label">Soma · Pmax</div><div className="kpi-value">{fmt(totals.sumP, 1)}<span className="kpi-unit">MW</span></div></div>
-        <div className="kpi"><div className="kpi-label">Soma · Smax</div><div className="kpi-value">{fmt(totals.sumS, 1)}<span className="kpi-unit">MVA</span></div></div>
+        <div className="kpi"><div className="kpi-label">Soma · Instalado</div><div className="kpi-value">{fmt(totals.sumI, 0)}<span className="kpi-unit">MVA</span></div><div className="kpi-delta">{pts.length} pontos</div></div>
+        <div className="kpi"><div className="kpi-label">Soma · Pmax (limites)</div><div className="kpi-value">{fmt(totals.sumP, 1)}<span className="kpi-unit">MW</span></div></div>
+        <div className="kpi"><div className="kpi-label">Soma · Smax (limites)</div><div className="kpi-value">{fmt(totals.sumS, 1)}<span className="kpi-unit">MVA</span></div></div>
       </div>
-      <div className="card">
-        <div className="card-h-title" style={{ marginBottom: 4 }}>Pontos no balanço</div>
-        <div className="chips" style={{ marginBottom: 16 }}>
-          {pts.map(p => <span key={p} className="chip"><span className="swatch" style={{ background: "var(--accent)" }}></span>{p}</span>)}
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div>
-            <div className="sub-h">P · Top 5 máximos</div>
-            <table className="dt"><tbody>
-              {totals.P.map((it,i) => <tr key={i}><td className="dim">{i+1}</td><td className="num"><strong>{fmt(it.value,2)}</strong> <span className="dim">MW</span></td><td className="num dim">{it.ts}</td></tr>)}
-            </tbody></table>
+      {showSomaTotalTop ? (
+        <div className="card">
+          <div className="card-h-title" style={{ marginBottom: 4 }}>Soma Total · Top 5 históricos</div>
+          <div className="card-h-sub" style={{ marginBottom: 16 }}>Extremos da soma de todos os pontos ao longo do arquivo.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <div>
+              <div className="sub-h">P · Máximos</div>
+              <table className="dt"><tbody>
+                {(somaTopo.Pmax_top || []).slice(0, 5).map((it, i) => (
+                  <tr key={i}><td className="dim">{i + 1}</td><td className="num"><strong>{fmt(it.value, 2)}</strong> <span className="dim">MW</span></td><td className="num dim">{it.ts}</td></tr>
+                ))}
+              </tbody></table>
+            </div>
+            <div>
+              <div className="sub-h">S · Máximos</div>
+              <table className="dt"><tbody>
+                {(somaTopo.Smax_top || []).slice(0, 5).map((it, i) => (
+                  <tr key={i}><td className="dim">{i + 1}</td><td className="num"><strong>{fmt(it.value, 2)}</strong> <span className="dim">MVA</span></td><td className="num dim">{it.ts}</td></tr>
+                ))}
+              </tbody></table>
+            </div>
           </div>
-          <div>
-            <div className="sub-h">S · Top 5 máximos</div>
-            <table className="dt"><tbody>
-              {totals.S.map((it,i) => <tr key={i}><td className="dim">{i+1}</td><td className="num"><strong>{fmt(it.value,2)}</strong> <span className="dim">MVA</span></td><td className="num dim">{it.ts}</td></tr>)}
-            </tbody></table>
+        </div>
+      ) : (
+        <div className="card">
+          <div className="card-h-title">Top 5 do subconjunto</div>
+          <div className="card-h-sub" style={{ marginTop: 4 }}>
+            Top 5 históricos só estão pré-calculados para "Soma Total" (todos os pontos). Selecione todos os pontos para visualizar, ou utilize a aba <strong>Extremos</strong> para um ponto específico.
           </div>
         </div>
-      </div>
+      )}
     </>
   );
 }

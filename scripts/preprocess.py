@@ -429,12 +429,21 @@ def write_must(ts_full, p_kwh, limits_csv, pontos):
                     "threshold": float(soma_thr),
                 })
 
-    # sort newest first
+    # sort newest first; keep only top-K per ponto so the JSON and DOM stay sane
+    MUST_MAX_PER_PONTO = 1000
+    summary = {}
+    for k, evs in out.items():
+        ponta = sum(1 for e in evs if e["type"] == "MUSTP")
+        summary[k] = {"total": len(evs), "ponta": ponta, "fora_ponta": len(evs) - ponta}
     for k in out:
         out[k].sort(key=lambda e: e["ts"], reverse=True)
-    (OUT_DIR / "must.json").write_text(json.dumps(out, separators=(",", ":")), encoding="utf-8")
-    n_events = sum(len(v) for v in out.values())
-    print(f"[preprocess] wrote must.json · {n_events} events total", flush=True)
+        if len(out[k]) > MUST_MAX_PER_PONTO:
+            out[k] = out[k][:MUST_MAX_PER_PONTO]
+    payload = {"events": out, "summary": summary, "cap_per_ponto": MUST_MAX_PER_PONTO}
+    (OUT_DIR / "must.json").write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    n_events = sum(s["total"] for s in summary.values())
+    n_kept = sum(len(v) for v in out.values())
+    print(f"[preprocess] wrote must.json · {n_events} events total · kept {n_kept} after cap", flush=True)
 
 
 def write_extremos(ts_full, p_mw, s_signed, pontos):
