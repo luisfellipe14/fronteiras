@@ -22,7 +22,7 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time, timezone
 
 import numpy as np
 import pandas as pd
@@ -322,7 +322,7 @@ def write_meta(points, limits_csv, ts_full, p_mw, q_mvar, s_signed, pontos):
     )
 
     meta = {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "points": points,
         "limits": merged_limits,
         "dates": dates,
@@ -378,9 +378,12 @@ def write_must(ts_full, p_kwh, limits_csv, pontos):
         (OUT_DIR / "must.json").write_text(json.dumps(out), encoding="utf-8")
         return
 
-    pontos_with_must = [p for p in pontos
-                       if (limits_csv.get(p, {}).get("MUSTP") is not None
-                           or limits_csv.get(p, {}).get("MUSTFP") is not None)]
+    ponta_start = time(18, 30)
+    ponta_end = time(21, 30)
+    must_configs = [(i, p, limits_csv[p]) for i, p in enumerate(pontos)
+                    if (limits_csv.get(p, {}).get("MUSTP") is not None
+                        or limits_csv.get(p, {}).get("MUSTFP") is not None)]
+    soma_lim = limits_csv.get("Soma Total", {})
 
     # stack into 2D: rows = ts, cols = ponto
     p_arr = np.vstack([p_kwh[p] for p in pontos]).T  # (n, P)
@@ -393,32 +396,27 @@ def write_must(ts_full, p_kwh, limits_csv, pontos):
             continue
         is_weekday = t.weekday() <= 4
         tod = t.time()
-        is_ponta = (is_weekday and
-                    tod >= datetime.strptime("18:30", "%H:%M").time() and
-                    tod <= datetime.strptime("21:30", "%H:%M").time())
+        is_ponta = is_weekday and ponta_start <= tod <= ponta_end
 
         sum15 = p_arr[i] + p_arr[i + 1] + p_arr[i + 2]  # kWh in 15min per ponto
         must_mw = (sum15 * 1000.0) / 4.0
         ts_str = t.strftime("%Y-%m-%d %H:%M")
 
-        for col_idx, p in enumerate(pontos):
+        for col_idx, p, lim in must_configs:
             v = must_mw[col_idx]
             if np.isnan(v):
                 continue
-            lim = limits_csv.get(p, {})
             thr = lim.get("MUSTP") if is_ponta else lim.get("MUSTFP")
-            thr_type = "MUSTP" if is_ponta else "MUSTFP"
             if thr is None:
                 continue
             if v > thr:
                 out[p].append({
                     "ts": ts_str,
                     "value_mw": round(float(v), 3),
-                    "type": thr_type,
+                    "type": "MUSTP" if is_ponta else "MUSTFP",
                     "threshold": float(thr),
                 })
 
-        soma_lim = limits_csv.get("Soma Total", {})
         soma_thr = soma_lim.get("MUSTP") if is_ponta else soma_lim.get("MUSTFP")
         if soma_thr is not None:
             soma_kwh = soma_arr[i] + soma_arr[i + 1] + soma_arr[i + 2]
