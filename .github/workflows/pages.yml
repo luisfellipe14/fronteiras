@@ -49,7 +49,7 @@ jobs:
           tag="${EVENT_TAG:-${INPUT_TAG:-data-latest}}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Download demandas.csv from release
+      - name: Fetch demandas.csv (release asset takes priority over repo copy)
         id: fetch
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,13 +57,28 @@ jobs:
         run: |
           mkdir -p csv
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Found release $TAG — downloading demandas.csv"
-            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --pattern 'demandas.csv' --dir csv --clobber
-            echo "found=1" >> "$GITHUB_OUTPUT"
-            ls -la csv/
+            assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --json assets --jq '.assets[].name' | grep -iE '\.csv$' || true)
+            if [ -n "$assets" ]; then
+              picked=$(echo "$assets" | grep -iE '^demandas' | head -n1)
+              if [ -z "$picked" ]; then picked=$(echo "$assets" | head -n1); fi
+              echo "Release $TAG: downloading asset '$picked'"
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --pattern "$picked" --dir csv --clobber
+              if [ "$picked" != "demandas.csv" ]; then
+                mv -f "csv/$picked" csv/demandas.csv
+              fi
+            else
+              echo "Release $TAG has no .csv asset"
+            fi
           else
-            echo "Release $TAG not found — skipping preprocess (site will use mock data)"
+            echo "Release $TAG not found"
+          fi
+          if [ -s csv/demandas.csv ]; then
+            echo "Using csv/demandas.csv ($(stat -c%s csv/demandas.csv) bytes)"
+            echo "found=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "No demandas.csv available — site will fall back to mock data"
             echo "found=0" >> "$GITHUB_OUTPUT"
           fi
 
