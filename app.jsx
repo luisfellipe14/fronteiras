@@ -83,7 +83,7 @@ function App() {
     return () => { cancelled = true; };
   }, [date]);
 
-  const sources = selected.size > 0 ? Array.from(selected) : (picked ? [picked] : []);
+  const sources = (selected.size > 0 ? Array.from(selected) : (picked ? [picked] : [])).sort();
   const isSum = sources.length >= 2;
 
   const limits = useMemo(() => {
@@ -247,8 +247,9 @@ function App() {
                   if (window.AVAILABLE_DATES.includes(v)) { setDate(v); return; }
                   // snap to nearest available date
                   let best = window.AVAILABLE_DATES[0], bestDiff = Infinity;
+                  const targetTime = new Date(v).getTime();
                   for (const d of window.AVAILABLE_DATES) {
-                    const diff = Math.abs(new Date(d) - new Date(v));
+                    const diff = Math.abs(new Date(d).getTime() - targetTime);
                     if (diff < bestDiff) { bestDiff = diff; best = d; }
                   }
                   setDate(best);
