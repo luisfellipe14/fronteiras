@@ -170,34 +170,27 @@ function MustPanel() {
 
 // ---------- RAO ----------
 function RaoPanel() {
-  const [sem, setSem] = useS("may_oct");
-  const [year, setYear] = useS(2025);
-  const rows = useM(() => {
-    let s = year * 1000 + (sem === "may_oct" ? 1 : 2);
-    const rand = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
-    return Object.keys(window.LIMITS).map(p => {
-      const total = 4000 + Math.floor(rand() * 400);
-      const validas = Math.floor(total * (0.85 + rand() * 0.13));
-      const inv = total - validas;
-      const dentro = Math.floor(validas * (0.78 + rand() * 0.18));
-      return {
-        ponto: p,
-        total, validas, invalidas: inv,
-        reverso: Math.floor(rand() * 50),
-        desligado: inv - Math.floor(rand() * 50),
-        dentro_count: dentro,
-        dentro_pct: +((dentro/total)*100).toFixed(2),
-        fora_count: total - dentro,
-        fora_pct: +(((total-dentro)/total)*100).toFixed(2),
-        ind: Math.floor(validas * (0.7 + rand()*0.2)),
-        cap: validas - Math.floor(validas * (0.7 + rand()*0.2)),
-      };
+  const availableYears = useM(() => {
+    const years = new Set();
+    Object.keys(window.RAO_DATA || {}).forEach(k => {
+      const y = parseInt(k.split("_")[0], 10);
+      if (!isNaN(y)) years.add(y);
     });
-  }, [sem, year]);
-
-  const totals = useM(() => rows.reduce((acc, r) => ({
-    total: acc.total + r.total, val: acc.val + r.validas, inv: acc.inv + r.invalidas
-  }), { total: 0, val: 0, inv: 0 }), [rows]);
+    if (years.size === 0) [2024, 2025, 2026].forEach(y => years.add(y));
+    return Array.from(years).sort((a, b) => a - b);
+  }, []);
+  const [sem, setSem] = useS("may_oct");
+  const [year, setYear] = useS(availableYears[availableYears.length - 1]);
+  const bucket = (window.RAO_DATA || {})[`${year}_${sem}`];
+  const rows = bucket ? bucket.rows : [];
+  const totals = useM(() => {
+    if (bucket && bucket.totais) {
+      return { total: bucket.totais.total, val: bucket.totais.validas, inv: bucket.totais.invalidas };
+    }
+    return rows.reduce((acc, r) => ({
+      total: acc.total + r.total, val: acc.val + r.validas, inv: acc.inv + r.invalidas
+    }), { total: 0, val: 0, inv: 0 });
+  }, [bucket, rows]);
 
   return (
     <>
@@ -213,7 +206,7 @@ function RaoPanel() {
               <button className={sem === "nov_apr" ? "active" : ""} onClick={() => setSem("nov_apr")}>Nov – Abr</button>
             </div>
             <select className="h-control" value={year} onChange={e => setYear(+e.target.value)}>
-              {[2023, 2024, 2025, 2026].map(y => <option key={y} value={y}>{y}</option>)}
+              {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
         </div>
@@ -221,7 +214,7 @@ function RaoPanel() {
           <div><div className="eyebrow">Medições</div><div className="num" style={{ fontSize: 22 }}>{fmt(totals.total,0)}</div></div>
           <div><div className="eyebrow">Válidas</div><div className="num" style={{ fontSize: 22, color: "var(--good)" }}>{fmt(totals.val,0)}</div></div>
           <div><div className="eyebrow">Inválidas</div><div className="num" style={{ fontSize: 22, color: "var(--bad)" }}>{fmt(totals.inv,0)}</div></div>
-          <div><div className="eyebrow">Cobertura</div><div className="num" style={{ fontSize: 22 }}>{((totals.val/totals.total)*100).toFixed(1)}%</div></div>
+          <div><div className="eyebrow">Cobertura</div><div className="num" style={{ fontSize: 22 }}>{totals.total ? ((totals.val/totals.total)*100).toFixed(1) + "%" : "—"}</div></div>
         </div>
       </div>
 
@@ -268,28 +261,14 @@ function RaoPanel() {
 // ---------- Extremos Top N ----------
 function ExtremosPanel({ ponto }) {
   const [topN, setTopN] = useS(5);
-  const lim = window.LIMITS[ponto] || {};
+  const top = (window.EXTREMOS_TOP || {})[ponto] || {};
   const data = useM(() => {
-    let s = ponto.length * 31;
-    const rand = () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
-    const gen = (max, min, isS) => {
-      const out = { high: [], low: [] };
-      for (let i = 0; i < topN; i++) {
-        const dayIdx = Math.floor(rand() * 60);
-        const day = window.AVAILABLE_DATES[dayIdx];
-        const h = Math.floor(rand() * 24), m = [0,15,30,45][Math.floor(rand()*4)];
-        const ts = `${day} ${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
-        const yr = +day.slice(0,4);
-        out.high.push({ value: max * (0.92 + rand() * 0.08 - i * 0.01), ts, year: yr });
-        out.low.push({ value: min * (0.92 + rand() * 0.08 - i * 0.01), ts, year: yr });
-      }
-      return out;
-    };
+    const slice = (arr) => (arr || []).slice(0, topN);
     return {
-      P: gen(lim.Pmax || 100, lim.Pmin || -20),
-      S: gen(lim.Smax || lim.Pmax || 100, lim.Smin || -20),
+      P: { high: slice(top.Pmax_top), low: slice(top.Pmin_top) },
+      S: { high: slice(top.Smax_top), low: slice(top.Smin_top) },
     };
-  }, [ponto, topN]);
+  }, [ponto, topN, top]);
 
   const TopTable = ({ title, items, unit }) => (
     <div>

@@ -70,12 +70,40 @@ function App() {
   const [section, setSection] = useState("overview");
   const [date, setDate] = useState(window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]);
   const [tipo, setTipo] = useState("S"); // S ou P
-  const [picked, setPicked] = useState("Coxipo"); // ponto inspecionado no gráfico
+  const initialPick = window.LIMITS["Coxipo"] ? "Coxipo" : (Object.keys(window.LIMITS)[0] || "");
+  const [picked, setPicked] = useState(initialPick); // ponto inspecionado no gráfico
   const [selected, setSelected] = useState(new Set());
   const [search, setSearch] = useState("");
+  const [dayData, setDayData] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setDayData(null);
+    window.loadDay(date).then((d) => { if (!cancelled) setDayData(d); });
+    return () => { cancelled = true; };
+  }, [date]);
 
   const limits = window.LIMITS[picked] || {};
-  const series = useMemo(() => window.genSeries(picked, date, tipo), [picked, date, tipo]);
+  const series = useMemo(() => {
+    if (!dayData) return null;
+    const point = dayData.points[picked];
+    const refP = limits.Pmax || limits.Smax || 100;
+    const refS = limits.Smax || limits.Pmax || 100;
+    if (!point) {
+      return {
+        labels: dayData.labels || [],
+        values: [],
+        ref: tipo === "P" ? refP : refS,
+        refMin: tipo === "P" ? (limits.Pmin || -refP * 0.2) : (limits.Smin || -refS * 0.2),
+        MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP,
+      };
+    }
+    const raw = tipo === "P" ? point.P : point.S;
+    const values = (raw || []).map((v) => v == null ? 0 : v);
+    const ref = tipo === "P" ? refP : refS;
+    const refMin = tipo === "P" ? (limits.Pmin || -ref * 0.2) : (limits.Smin || -ref * 0.2);
+    return { labels: dayData.labels, values, ref, refMin, MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP };
+  }, [dayData, picked, tipo, limits]);
 
   const toggleSel = (p) => {
     setSelected(s => {
@@ -234,23 +262,35 @@ function App() {
                   </div>
                 </div>
                 <div style={{ padding: "8px 16px 16px" }}>
-                  <TimeSeriesChart series={series} lim={limits} tipo={tipo} height={340} accent={`oklch(58% 0.18 ${tweaks.accentHue})`} />
+                  {!series ? (
+                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Carregando série…</div>
+                  ) : series.values.length === 0 ? (
+                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Sem amostras para {picked} em {formatDateBR(date)}.</div>
+                  ) : (
+                    <TimeSeriesChart series={series} lim={limits} tipo={tipo} height={340} accent={`oklch(58% 0.18 ${tweaks.accentHue})`} />
+                  )}
                 </div>
                 <div style={{ padding: "0 20px 16px", display: "flex", gap: 24, borderTop: "1px solid var(--border)", paddingTop: 14 }}>
-                  <div><div className="eyebrow">Pico do dia</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{Math.max(...series.values).toFixed(2)} <span style={{ color: "var(--text-faint)", fontSize: 12 }}>{tipo === "S" ? "MVA" : "MW"}</span></div></div>
-                  <div><div className="eyebrow">Mín do dia</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{Math.min(...series.values).toFixed(2)}</div></div>
-                  <div><div className="eyebrow">Média</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{(series.values.reduce((a,b)=>a+b,0)/series.values.length).toFixed(2)}</div></div>
-                  <div><div className="eyebrow">Limite</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{tipo === "P" ? (limits.Pmax || "—") : (limits.Smax?.toFixed(1) || "—")}</div></div>
-                  <div style={{ marginLeft: "auto", alignSelf: "end" }}>
-                    <div className="eyebrow">% do limite</div>
-                    <div className="num" style={{ fontSize: 18, fontWeight: 600, color: "var(--bad)" }}>
-                      {(() => {
-                        const l = tipo === "P" ? limits.Pmax : limits.Smax;
-                        if (!l) return "—";
-                        return ((Math.max(...series.values) / l) * 100).toFixed(1) + "%";
-                      })()}
-                    </div>
-                  </div>
+                  {series && series.values.length > 0 ? (
+                    <>
+                      <div><div className="eyebrow">Pico do dia</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{Math.max(...series.values).toFixed(2)} <span style={{ color: "var(--text-faint)", fontSize: 12 }}>{tipo === "S" ? "MVA" : "MW"}</span></div></div>
+                      <div><div className="eyebrow">Mín do dia</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{Math.min(...series.values).toFixed(2)}</div></div>
+                      <div><div className="eyebrow">Média</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{(series.values.reduce((a,b)=>a+b,0)/series.values.length).toFixed(2)}</div></div>
+                      <div><div className="eyebrow">Limite</div><div className="num" style={{ fontSize: 18, fontWeight: 600 }}>{tipo === "P" ? (limits.Pmax || "—") : (limits.Smax?.toFixed(1) || "—")}</div></div>
+                      <div style={{ marginLeft: "auto", alignSelf: "end" }}>
+                        <div className="eyebrow">% do limite</div>
+                        <div className="num" style={{ fontSize: 18, fontWeight: 600, color: "var(--bad)" }}>
+                          {(() => {
+                            const l = tipo === "P" ? limits.Pmax : limits.Smax;
+                            if (!l) return "—";
+                            return ((Math.max(...series.values) / l) * 100).toFixed(1) + "%";
+                          })()}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="dim">Sem dados para este dia.</div>
+                  )}
                 </div>
               </div>
 
@@ -350,4 +390,35 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+function Boot() {
+  const [ready, setReady] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    window.__dataReady.then(() => { if (alive) setReady(true); });
+    return () => { alive = false; };
+  }, []);
+  if (!ready) {
+    return (
+      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
+        Carregando dados…
+      </div>
+    );
+  }
+  return (
+    <>
+      {!window.USING_REAL_DATA && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 50,
+          background: "var(--warn-soft)", color: "var(--warn)",
+          padding: "6px 16px", fontSize: 12, textAlign: "center",
+          borderBottom: "1px solid var(--border)",
+        }}>
+          Dados de exemplo · publique <code>demandas.csv</code> num release com tag <code>data-latest</code> pra usar dados reais.
+        </div>
+      )}
+      <App />
+    </>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Boot />);

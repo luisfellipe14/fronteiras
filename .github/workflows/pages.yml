@@ -3,7 +3,14 @@ name: Deploy to GitHub Pages
 on:
   push:
     branches: [main]
+  release:
+    types: [published, edited]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag with demandas.csv"
+        required: false
+        default: "data-latest"
 
 permissions:
   contents: read
@@ -22,6 +29,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: scripts/requirements.txt
+
+      - name: Install Python deps
+        run: pip install -r scripts/requirements.txt
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.release_tag }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          tag="${EVENT_TAG:-${INPUT_TAG:-data-latest}}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download demandas.csv from release
+        id: fetch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p csv
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Found release $TAG — downloading demandas.csv"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern 'demandas.csv' --dir csv --clobber
+            echo "found=1" >> "$GITHUB_OUTPUT"
+            ls -la csv/
+          else
+            echo "Release $TAG not found — skipping preprocess (site will use mock data)"
+            echo "found=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run preprocess
+        if: steps.fetch.outputs.found == '1'
+        run: python scripts/preprocess.py
+
+      - name: Drop CSV before upload
+        if: always()
+        run: rm -f csv/demandas.csv
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
