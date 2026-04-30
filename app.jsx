@@ -399,28 +399,7 @@ function App() {
 
         {section === "must" && <MustPanel />}
 
-        {section === "extremos" && (
-          <>
-            <div className="card flush" style={{ marginBottom: "var(--gap)" }}>
-              <div className="card-h">
-                <div className="card-h-title">Selecione um ponto</div>
-                <div className="card-h-sub">Atual: {picked}</div>
-              </div>
-              <div style={{ padding: 12 }}>
-                <div className="chips">
-                  {window.POINTS.map(p => (
-                    <button key={p.point} className={"chip " + (picked === p.point ? "" : "")}
-                            onClick={() => setPicked(p.point)}
-                            style={{ cursor: "pointer", background: picked === p.point ? "var(--accent-soft)" : "var(--bg-elev)", color: picked === p.point ? "var(--accent)" : undefined, paddingRight: 10 }}>
-                      {p.point}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <ExtremosPanel ponto={picked} />
-          </>
-        )}
+        {section === "extremos" && <ExtremosPanel ponto={picked} />}
 
         {section === "balanco" && <BalancoPanel selected={selected} onToggle={toggleSel} onSetSelected={setSelected} />}
 

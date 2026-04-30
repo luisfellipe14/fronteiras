@@ -290,15 +290,129 @@ function RaoPanel() {
 
 // ---------- Extremos Top N ----------
 function ExtremosPanel({ ponto }) {
+  const allPontos = useM(() => Object.keys(window.LIMITS || {}).filter(k => k !== "Soma Total").sort(), []);
+  const allDates = window.AVAILABLE_DATES || [];
+  const fullStart = allDates[0] || "";
+  const fullEnd = allDates[allDates.length - 1] || "";
+
   const [topN, setTopN] = useS(5);
-  const top = (window.EXTREMOS_TOP || {})[ponto] || {};
-  const data = useM(() => {
-    const slice = (arr) => (arr || []).slice(0, topN);
-    return {
-      P: { high: slice(top.Pmax_top), low: slice(top.Pmin_top) },
-      S: { high: slice(top.Smax_top), low: slice(top.Smin_top) },
+  const [selected, setSelected] = useS(() => new Set(ponto ? [ponto] : []));
+  const [startDate, setStartDate] = useS(fullStart);
+  const [endDate, setEndDate] = useS(fullEnd);
+  const [result, setResult] = useS(null);
+  const [loading, setLoading] = useS(false);
+  const [progress, setProgress] = useS({ done: 0, total: 0 });
+
+  const isDefault = (
+    selected.size === 1 &&
+    selected.has(ponto) &&
+    startDate === fullStart &&
+    endDate === fullEnd
+  );
+
+  // Default fast path: use precomputed Top 20 for the originally-selected single point
+  React.useEffect(() => {
+    if (isDefault) {
+      const t = (window.EXTREMOS_TOP || {})[ponto] || {};
+      setResult({
+        label: ponto,
+        precomputed: true,
+        P: { high: t.Pmax_top || [], low: t.Pmin_top || [] },
+        S: { high: t.Smax_top || [], low: t.Smin_top || [] },
+      });
+    }
+  }, [ponto, isDefault]);
+
+  const toggle = (p) => {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(p)) n.delete(p); else n.add(p);
+      return n;
+    });
+    setResult(null);
+  };
+  const onStart = (v) => { setStartDate(v); setResult(null); };
+  const onEnd = (v) => { setEndDate(v); setResult(null); };
+
+  const compute = async () => {
+    const pts = Array.from(selected).sort();
+    if (pts.length === 0) return;
+    if (startDate > endDate) return;
+
+    const dates = allDates.filter(d => d >= startDate && d <= endDate);
+    setLoading(true);
+    setProgress({ done: 0, total: dates.length });
+
+    const TOP_KEEP = 20;
+    const pHigh = []; const pLow = []; const sHigh = []; const sLow = [];
+
+    const pushTop = (arr, item, largest) => {
+      if (arr.length < TOP_KEEP) {
+        arr.push(item);
+        arr.sort((a, b) => largest ? b.value - a.value : a.value - b.value);
+        return;
+      }
+      const worst = arr[arr.length - 1].value;
+      if ((largest && item.value > worst) || (!largest && item.value < worst)) {
+        arr[arr.length - 1] = item;
+        arr.sort((a, b) => largest ? b.value - a.value : a.value - b.value);
+      }
     };
-  }, [ponto, topN, top]);
+
+    for (let di = 0; di < dates.length; di++) {
+      const d = dates[di];
+      let day;
+      try { day = await window.loadDay(d); } catch { day = null; }
+      if (day && day.labels && day.points) {
+        const labels = day.labels;
+        const N = labels.length;
+        const present = pts.map(p => day.points[p]).filter(Boolean);
+        if (present.length > 0) {
+          for (let i = 0; i < N; i++) {
+            let pSum = 0, sSum = 0, anyP = false, anyS = false;
+            for (const pt of present) {
+              const pv = pt.P ? pt.P[i] : null;
+              const sv = pt.S ? pt.S[i] : null;
+              if (pv != null) { pSum += pv; anyP = true; }
+              if (sv != null) { sSum += sv; anyS = true; }
+            }
+            if (anyP || anyS) {
+              const ts = `${d} ${labels[i]}`;
+              if (anyP) {
+                const itP = { value: pSum, ts, year: +d.slice(0, 4) };
+                pushTop(pHigh, itP, true);
+                pushTop(pLow, itP, false);
+              }
+              if (anyS) {
+                const itS = { value: sSum, ts, year: +d.slice(0, 4) };
+                pushTop(sHigh, itS, true);
+                pushTop(sLow, itS, false);
+              }
+            }
+          }
+        }
+      }
+      // yield to UI every few days
+      if (di % 5 === 0) {
+        setProgress({ done: di + 1, total: dates.length });
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+
+    setProgress({ done: dates.length, total: dates.length });
+    setResult({
+      label: pts.length === 1 ? pts[0] : `Soma de ${pts.length} pontos`,
+      precomputed: false,
+      P: { high: pHigh, low: pLow },
+      S: { high: sHigh, low: sLow },
+    });
+    setLoading(false);
+  };
+
+  const data = result ? {
+    P: { high: (result.P.high || []).slice(0, topN), low: (result.P.low || []).slice(0, topN) },
+    S: { high: (result.S.high || []).slice(0, topN), low: (result.S.low || []).slice(0, topN) },
+  } : null;
 
   const TopTable = ({ title, items, unit }) => (
     <div>
@@ -306,9 +420,11 @@ function ExtremosPanel({ ponto }) {
       <table className="dt" style={{ background: "var(--bg-elev)", border: "1px solid var(--border)", borderRadius: 6 }}>
         <thead><tr><th>#</th><th className="num">Valor</th><th>Data/Hora</th></tr></thead>
         <tbody>
-          {items.map((it, i) => (
+          {(items || []).length === 0 ? (
+            <tr><td colSpan="3" className="empty">—</td></tr>
+          ) : (items || []).map((it, i) => (
             <tr key={i}>
-              <td className="dim">{i+1}</td>
+              <td className="dim">{i + 1}</td>
               <td className="num"><strong>{fmt(it.value, 2)}</strong> <span className="dim">{unit}</span></td>
               <td className="num dim">{it.ts}</td>
             </tr>
@@ -318,29 +434,85 @@ function ExtremosPanel({ ponto }) {
     </div>
   );
 
+  const numSel = selected.size;
   return (
-    <div className="card">
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div>
-          <div className="card-h-title">Extremos · Top {topN}</div>
-          <div className="card-h-sub">{ponto} · período: arquivo completo</div>
+    <>
+      <div className="card flush" style={{ marginBottom: "var(--gap)" }}>
+        <div className="card-h">
+          <div>
+            <div className="card-h-title">Filtros</div>
+            <div className="card-h-sub">{numSel} ponto{numSel === 1 ? "" : "s"} · {startDate} → {endDate}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="date" className="date-input" value={startDate} min={fullStart} max={fullEnd}
+                   onChange={e => onStart(e.target.value)} title="Início" />
+            <span style={{ color: "var(--text-faint)" }}>→</span>
+            <input type="date" className="date-input" value={endDate} min={fullStart} max={fullEnd}
+                   onChange={e => onEnd(e.target.value)} title="Fim" />
+            <button className="h-control" onClick={() => { setSelected(new Set(allPontos)); setResult(null); }}>Todos</button>
+            <button className="h-control" onClick={() => { setSelected(new Set()); setResult(null); }} disabled={numSel === 0}>Limpar</button>
+            <button className="h-control primary" onClick={compute} disabled={loading || numSel === 0 || startDate > endDate}>
+              {loading ? `Calculando… ${progress.done}/${progress.total}` : "Calcular"}
+            </button>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-          <span className="eyebrow">Top N</span>
-          <div className="toggle-pill">
-            {[5, 10, 20].map(n => (
-              <button key={n} className={topN === n ? "active" : ""} onClick={() => setTopN(n)}>{n}</button>
-            ))}
+        <div style={{ padding: 12 }}>
+          <div className="chips">
+            {allPontos.map(p => {
+              const isSel = selected.has(p);
+              return (
+                <button key={p} className="chip"
+                  onClick={() => toggle(p)}
+                  style={{
+                    cursor: "pointer", paddingRight: 10,
+                    background: isSel ? "var(--accent-soft)" : "var(--bg-elev)",
+                    color: isSel ? "var(--accent)" : undefined,
+                    borderColor: isSel ? "var(--accent)" : "var(--border)",
+                  }}>
+                  <span className="swatch" style={{ background: isSel ? "var(--accent)" : "var(--text-faint)" }}></span>
+                  {p}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-        <TopTable title="P · Máximos" items={data.P.high} unit="MW" />
-        <TopTable title="P · Mínimos" items={data.P.low} unit="MW" />
-        <TopTable title="S · Máximos" items={data.S.high} unit="MVA" />
-        <TopTable title="S · Mínimos" items={data.S.low} unit="MVA" />
+
+      <div className="card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <div className="card-h-title">Extremos · Top {topN}</div>
+            <div className="card-h-sub">
+              {result ? result.label : (numSel === 1 ? Array.from(selected)[0] : `${numSel} pontos`)}
+              {result && result.precomputed && <span style={{ color: "var(--text-faint)" }}> · período completo (precomputado)</span>}
+              {result && !result.precomputed && <span style={{ color: "var(--text-faint)" }}> · {startDate} → {endDate}</span>}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <span className="eyebrow">Top N</span>
+            <div className="toggle-pill">
+              {[5, 10, 20].map(n => (
+                <button key={n} className={topN === n ? "active" : ""} onClick={() => setTopN(n)}>{n}</button>
+              ))}
+            </div>
+          </div>
+        </div>
+        {!data ? (
+          <div className="empty">
+            {loading
+              ? `Carregando dias ${progress.done} de ${progress.total}…`
+              : "Ajuste os filtros e clique em Calcular para gerar os extremos."}
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            <TopTable title="P · Máximos" items={data.P.high} unit="MW" />
+            <TopTable title="P · Mínimos" items={data.P.low} unit="MW" />
+            <TopTable title="S · Máximos" items={data.S.high} unit="MVA" />
+            <TopTable title="S · Mínimos" items={data.S.low} unit="MVA" />
+          </div>
+        )}
       </div>
-    </div>
+    </>
   );
 }
 
