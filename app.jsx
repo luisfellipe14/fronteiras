@@ -367,7 +367,7 @@ function App() {
           </>
         )}
 
-        {section === "balanco" && <BalancoPanel selected={selected} />}
+        {section === "balanco" && <BalancoPanel selected={selected} onToggle={toggleSel} onSetSelected={setSelected} />}
 
         {section === "rao" && <RaoPanel />}
       </main>
