@@ -83,27 +83,59 @@ function App() {
     return () => { cancelled = true; };
   }, [date]);
 
-  const limits = window.LIMITS[picked] || {};
-  const series = useMemo(() => {
-    if (!dayData) return null;
-    const point = dayData.points[picked];
-    const refP = limits.Pmax || limits.Smax || 100;
-    const refS = limits.Smax || limits.Pmax || 100;
-    if (!point) {
+  const sources = selected.size > 0 ? Array.from(selected) : (picked ? [picked] : []);
+  const isSum = sources.length >= 2;
+
+  const limits = useMemo(() => {
+    if (isSum) {
+      const sum = (k) => sources.reduce((a, p) => a + ((window.LIMITS[p] && window.LIMITS[p][k]) || 0), 0);
       return {
-        labels: dayData.labels || [],
-        values: [],
-        ref: tipo === "P" ? refP : refS,
-        refMin: tipo === "P" ? (limits.Pmin || -refP * 0.2) : (limits.Smin || -refS * 0.2),
-        MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP,
+        Pmax: sum("Pmax"), Pmin: sum("Pmin"),
+        Smax: sum("Smax"), Smin: sum("Smin"),
+        MUSTP: sum("MUSTP"), MUSTFP: sum("MUSTFP"),
+        Instalado: sum("Instalado"),
       };
     }
-    const raw = tipo === "P" ? point.P : point.S;
-    const values = (raw || []).map((v) => v == null ? 0 : v);
+    return window.LIMITS[sources[0]] || {};
+  }, [isSum, sources.join(",")]);
+
+  const chartTitle = isSum
+    ? `Soma de ${sources.length} pontos`
+    : (sources[0] || "—");
+
+  const series = useMemo(() => {
+    if (!dayData) return null;
+    const refP = limits.Pmax || limits.Smax || 100;
+    const refS = limits.Smax || limits.Pmax || 100;
+    const fallback = {
+      labels: dayData.labels || [],
+      values: [],
+      ref: tipo === "P" ? refP : refS,
+      refMin: tipo === "P" ? (limits.Pmin || -refP * 0.2) : (limits.Smin || -refS * 0.2),
+      MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP,
+    };
+    const present = sources.map(p => dayData.points[p]).filter(Boolean);
+    if (present.length === 0) return fallback;
+
+    const N = (dayData.labels || []).length;
+    const values = new Array(N).fill(0);
+    let anyAny = false;
+    for (let i = 0; i < N; i++) {
+      let total = 0; let any = false;
+      for (const pt of present) {
+        const arr = tipo === "P" ? pt.P : pt.S;
+        const v = arr ? arr[i] : null;
+        if (v != null) { total += v; any = true; }
+      }
+      values[i] = any ? total : 0;
+      if (any) anyAny = true;
+    }
+    if (!anyAny) return fallback;
+
     const ref = tipo === "P" ? refP : refS;
     const refMin = tipo === "P" ? (limits.Pmin || -ref * 0.2) : (limits.Smin || -ref * 0.2);
     return { labels: dayData.labels, values, ref, refMin, MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP };
-  }, [dayData, picked, tipo, limits]);
+  }, [dayData, sources.join(","), tipo, limits]);
 
   const toggleSel = (p) => {
     setSelected(s => {
@@ -203,7 +235,26 @@ function App() {
               <button onClick={() => stepDay(-1)} title="Dia anterior">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6"/></svg>
               </button>
-              <div className="date-display">{formatDateBR(date)}</div>
+              <input
+                type="date"
+                className="date-input"
+                value={date}
+                min={window.AVAILABLE_DATES[0]}
+                max={window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (!v) return;
+                  if (window.AVAILABLE_DATES.includes(v)) { setDate(v); return; }
+                  // snap to nearest available date
+                  let best = window.AVAILABLE_DATES[0], bestDiff = Infinity;
+                  for (const d of window.AVAILABLE_DATES) {
+                    const diff = Math.abs(new Date(d) - new Date(v));
+                    if (diff < bestDiff) { bestDiff = diff; best = d; }
+                  }
+                  setDate(best);
+                }}
+                title="Selecionar data"
+              />
               <button onClick={() => stepDay(1)} title="Próximo dia">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m9 18 6-6-6-6"/></svg>
               </button>
@@ -252,8 +303,11 @@ function App() {
               <div className="card flush">
                 <div className="card-h">
                   <div>
-                    <div className="card-h-title">{picked} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {tipo === "S" ? "Potência aparente" : "Potência ativa"}</span></div>
-                    <div className="card-h-sub">{formatDateBR(date)} · 96 amostras (15 min)</div>
+                    <div className="card-h-title">{chartTitle} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {tipo === "S" ? "Potência aparente" : "Potência ativa"}</span></div>
+                    <div className="card-h-sub">
+                      {formatDateBR(date)}
+                      {isSum && <span style={{ color: "var(--text-faint)" }}> · soma de {sources.join(", ")}</span>}
+                    </div>
                   </div>
                   <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
                     <div className="status"><span className="status-dot bad"></span>Limite máx</div>
@@ -265,7 +319,7 @@ function App() {
                   {!series ? (
                     <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Carregando série…</div>
                   ) : series.values.length === 0 ? (
-                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Sem amostras para {picked} em {formatDateBR(date)}.</div>
+                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Sem amostras para {chartTitle} em {formatDateBR(date)}.</div>
                   ) : (
                     <TimeSeriesChart series={series} lim={limits} tipo={tipo} height={340} accent={`oklch(58% 0.18 ${tweaks.accentHue})`} />
                   )}
