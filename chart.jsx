@@ -57,8 +57,10 @@ function TimeSeriesChart({ series, lim, tipo, height = 320, accent = "var(--acce
     yTicks.push(v);
   }
 
-  // ticks X (a cada 6h)
-  const xTickIdx = [0, 24, 48, 72, 95];
+  // ticks X: 5 igualmente espaçados ao longo da série (independente do tamanho)
+  const xTickIdx = N <= 1
+    ? [0]
+    : [0, Math.floor((N - 1) * 0.25), Math.floor((N - 1) * 0.5), Math.floor((N - 1) * 0.75), N - 1];
 
   const onMove = (e) => {
     const rect = e.currentTarget.getBoundingClientRect();

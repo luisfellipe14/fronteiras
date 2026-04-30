@@ -74,14 +74,96 @@ function App() {
   const [picked, setPicked] = useState(initialPick); // ponto inspecionado no gráfico
   const [selected, setSelected] = useState(new Set());
   const [search, setSearch] = useState("");
-  const [dayData, setDayData] = useState(null);
+  const [viewData, setViewData] = useState(null);
+  const [chartMode, setChartMode] = useState("day"); // "day" | "range"
+  const [rangeStart, setRangeStart] = useState(window.AVAILABLE_DATES[Math.max(0, window.AVAILABLE_DATES.length - 7)]);
+  const [rangeEnd, setRangeEnd] = useState(window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]);
+  const [rangeProgress, setRangeProgress] = useState({ done: 0, total: 0 });
+
+  const MAX_RANGE_SAMPLES = 3000;
 
   useEffect(() => {
     let cancelled = false;
-    setDayData(null);
-    window.loadDay(date).then((d) => { if (!cancelled) setDayData(d); });
+    setViewData(null);
+    if (chartMode === "day") {
+      window.loadDay(date).then((d) => { if (!cancelled) setViewData(d); });
+      return () => { cancelled = true; };
+    }
+    // range mode
+    const datesInRange = (window.AVAILABLE_DATES || []).filter(d => d >= rangeStart && d <= rangeEnd);
+    if (datesInRange.length === 0) {
+      setViewData({ date: null, labels: [], points: {} });
+      return () => { cancelled = true; };
+    }
+    setRangeProgress({ done: 0, total: datesInRange.length });
+    (async () => {
+      const labels = [];
+      const points = {};
+      for (let i = 0; i < datesInRange.length; i++) {
+        if (cancelled) return;
+        const d = datesInRange[i];
+        let day;
+        try { day = await window.loadDay(d); } catch { day = null; }
+        if (day && day.labels) {
+          const labelStartLen = labels.length;
+          for (let j = 0; j < day.labels.length; j++) {
+            labels.push(`${d} ${day.labels[j]}`);
+          }
+          const dayPoints = day.points || {};
+          const merged = new Set([...Object.keys(points), ...Object.keys(dayPoints)]);
+          merged.forEach(p => {
+            if (!points[p]) points[p] = { P: [], Q: [], S: [] };
+            // pad missing entries up to where this day starts (handles pontos absent in earlier days)
+            while (points[p].P.length < labelStartLen) points[p].P.push(null);
+            while (points[p].Q.length < labelStartLen) points[p].Q.push(null);
+            while (points[p].S.length < labelStartLen) points[p].S.push(null);
+            const vals = dayPoints[p];
+            if (vals) {
+              (vals.P || []).forEach(v => points[p].P.push(v));
+              (vals.Q || []).forEach(v => points[p].Q.push(v));
+              (vals.S || []).forEach(v => points[p].S.push(v));
+            }
+            // pad to current labels length (handles short day files or absent ponto in this day)
+            while (points[p].P.length < labels.length) points[p].P.push(null);
+            while (points[p].Q.length < labels.length) points[p].Q.push(null);
+            while (points[p].S.length < labels.length) points[p].S.push(null);
+          });
+        }
+        if (i % 5 === 0) {
+          setRangeProgress({ done: i + 1, total: datesInRange.length });
+          await new Promise(r => setTimeout(r, 0));
+        }
+      }
+      if (cancelled) return;
+      // downsample if too many samples
+      let final = { date: null, labels, points };
+      if (labels.length > MAX_RANGE_SAMPLES) {
+        const factor = Math.ceil(labels.length / MAX_RANGE_SAMPLES);
+        const newLabels = [];
+        const newPoints = {};
+        Object.keys(points).forEach(p => { newPoints[p] = { P: [], Q: [], S: [] }; });
+        for (let i = 0; i < labels.length; i += factor) {
+          newLabels.push(labels[i]);
+          Object.keys(points).forEach(p => {
+            const v = points[p];
+            let pSum = 0, pCnt = 0, qSum = 0, qCnt = 0, sSum = 0, sCnt = 0;
+            for (let j = i; j < Math.min(i + factor, labels.length); j++) {
+              if (v.P[j] != null) { pSum += v.P[j]; pCnt++; }
+              if (v.Q[j] != null) { qSum += v.Q[j]; qCnt++; }
+              if (v.S[j] != null) { sSum += v.S[j]; sCnt++; }
+            }
+            newPoints[p].P.push(pCnt ? pSum / pCnt : null);
+            newPoints[p].Q.push(qCnt ? qSum / qCnt : null);
+            newPoints[p].S.push(sCnt ? sSum / sCnt : null);
+          });
+        }
+        final = { date: null, labels: newLabels, points: newPoints };
+      }
+      setViewData(final);
+      setRangeProgress({ done: datesInRange.length, total: datesInRange.length });
+    })();
     return () => { cancelled = true; };
-  }, [date]);
+  }, [chartMode, date, rangeStart, rangeEnd]);
 
   const sources = (selected.size > 0 ? Array.from(selected) : (picked ? [picked] : [])).sort();
   const isSum = sources.length >= 2;
@@ -104,20 +186,20 @@ function App() {
     : (sources[0] || "—");
 
   const series = useMemo(() => {
-    if (!dayData) return null;
+    if (!viewData) return null;
     const refP = limits.Pmax || limits.Smax || 100;
     const refS = limits.Smax || limits.Pmax || 100;
     const fallback = {
-      labels: dayData.labels || [],
+      labels: viewData.labels || [],
       values: [],
       ref: tipo === "P" ? refP : refS,
       refMin: tipo === "P" ? (limits.Pmin || -refP * 0.2) : (limits.Smin || -refS * 0.2),
       MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP,
     };
-    const present = sources.map(p => dayData.points[p]).filter(Boolean);
+    const present = sources.map(p => viewData.points[p]).filter(Boolean);
     if (present.length === 0) return fallback;
 
-    const N = (dayData.labels || []).length;
+    const N = (viewData.labels || []).length;
     const values = new Array(N).fill(0);
     let anyAny = false;
     for (let i = 0; i < N; i++) {
@@ -134,8 +216,8 @@ function App() {
 
     const ref = tipo === "P" ? refP : refS;
     const refMin = tipo === "P" ? (limits.Pmin || -ref * 0.2) : (limits.Smin || -ref * 0.2);
-    return { labels: dayData.labels, values, ref, refMin, MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP };
-  }, [dayData, sources.join(","), tipo, limits]);
+    return { labels: viewData.labels, values, ref, refMin, MUSTP: limits.MUSTP, MUSTFP: limits.MUSTFP };
+  }, [viewData, sources.join(","), tipo, limits]);
 
   const toggleSel = (p) => {
     setSelected(s => {
@@ -231,35 +313,64 @@ function App() {
 
         {section !== "rao" && (
           <>
-            <div className="date-stepper">
-              <button onClick={() => stepDay(-1)} title="Dia anterior">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6"/></svg>
-              </button>
-              <input
-                type="date"
-                className="date-input"
-                value={date}
-                min={window.AVAILABLE_DATES[0]}
-                max={window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]}
-                onChange={e => {
-                  const v = e.target.value;
-                  if (!v) return;
-                  if (window.AVAILABLE_DATES.includes(v)) { setDate(v); return; }
-                  // snap to nearest available date
-                  let best = window.AVAILABLE_DATES[0], bestDiff = Infinity;
-                  const targetTime = new Date(v).getTime();
-                  for (const d of window.AVAILABLE_DATES) {
-                    const diff = Math.abs(new Date(d).getTime() - targetTime);
-                    if (diff < bestDiff) { bestDiff = diff; best = d; }
-                  }
-                  setDate(best);
-                }}
-                title="Selecionar data"
-              />
-              <button onClick={() => stepDay(1)} title="Próximo dia">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m9 18 6-6-6-6"/></svg>
-              </button>
+            <div className="toggle-pill">
+              <button className={chartMode === "day" ? "active" : ""} onClick={() => setChartMode("day")}>Dia</button>
+              <button className={chartMode === "range" ? "active" : ""} onClick={() => setChartMode("range")}>Intervalo</button>
             </div>
+
+            {chartMode === "day" ? (
+              <div className="date-stepper">
+                <button onClick={() => stepDay(-1)} title="Dia anterior">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m15 18-6-6 6-6"/></svg>
+                </button>
+                <input
+                  type="date"
+                  className="date-input"
+                  value={date}
+                  min={window.AVAILABLE_DATES[0]}
+                  max={window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]}
+                  onChange={e => {
+                    const v = e.target.value;
+                    if (!v) return;
+                    if (window.AVAILABLE_DATES.includes(v)) { setDate(v); return; }
+                    let best = window.AVAILABLE_DATES[0], bestDiff = Infinity;
+                    const targetTime = new Date(v).getTime();
+                    for (const d of window.AVAILABLE_DATES) {
+                      const diff = Math.abs(new Date(d).getTime() - targetTime);
+                      if (diff < bestDiff) { bestDiff = diff; best = d; }
+                    }
+                    setDate(best);
+                  }}
+                  title="Selecionar data"
+                />
+                <button onClick={() => stepDay(1)} title="Próximo dia">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m9 18 6-6-6-6"/></svg>
+                </button>
+              </div>
+            ) : (
+              <div className="date-stepper">
+                <input
+                  type="date"
+                  className="date-input"
+                  value={rangeStart}
+                  min={window.AVAILABLE_DATES[0]}
+                  max={window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]}
+                  onChange={e => setRangeStart(e.target.value)}
+                  title="Início"
+                />
+                <span style={{ padding: "0 6px", color: "var(--text-faint)" }}>→</span>
+                <input
+                  type="date"
+                  className="date-input"
+                  value={rangeEnd}
+                  min={window.AVAILABLE_DATES[0]}
+                  max={window.AVAILABLE_DATES[window.AVAILABLE_DATES.length - 1]}
+                  onChange={e => setRangeEnd(e.target.value)}
+                  title="Fim"
+                />
+              </div>
+            )}
+
             <div className="toggle-pill">
               <button className={tipo === "S" ? "active" : ""} onClick={() => setTipo("S")}>S · MVA</button>
               <button className={tipo === "P" ? "active" : ""} onClick={() => setTipo("P")}>P · MW</button>
@@ -306,7 +417,9 @@ function App() {
                   <div>
                     <div className="card-h-title">{chartTitle} <span style={{ color: "var(--text-faint)", fontWeight: 400 }}>· {tipo === "S" ? "Potência aparente" : "Potência ativa"}</span></div>
                     <div className="card-h-sub">
-                      {formatDateBR(date)}
+                      {chartMode === "day"
+                        ? formatDateBR(date)
+                        : `${formatDateBR(rangeStart)} → ${formatDateBR(rangeEnd)}`}
                       {isSum && <span style={{ color: "var(--text-faint)" }}> · soma de {sources.join(", ")}</span>}
                     </div>
                   </div>
@@ -318,9 +431,15 @@ function App() {
                 </div>
                 <div style={{ padding: "8px 16px 16px" }}>
                   {!series ? (
-                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Carregando série…</div>
+                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      {chartMode === "range" && rangeProgress.total > 0
+                        ? `Carregando ${rangeProgress.done}/${rangeProgress.total} dias…`
+                        : "Carregando série…"}
+                    </div>
                   ) : series.values.length === 0 ? (
-                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>Sem amostras para {chartTitle} em {formatDateBR(date)}.</div>
+                    <div className="empty" style={{ height: 340, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      Sem amostras para {chartTitle} em {chartMode === "day" ? formatDateBR(date) : `${formatDateBR(rangeStart)} → ${formatDateBR(rangeEnd)}`}.
+                    </div>
                   ) : (
                     <TimeSeriesChart series={series} lim={limits} tipo={tipo} height={340} accent={`oklch(58% 0.18 ${tweaks.accentHue})`} />
                   )}
